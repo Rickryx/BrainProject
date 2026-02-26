@@ -22,6 +22,8 @@ export default function Home() {
   const [fuelDates, setFuelDates] = useState<Record<string, string>>({});
   const [pendingDrivers, setPendingDrivers] = useState<any[]>([]);
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'finished'>('all');
+  const [briefing, setBriefing] = useState<string | null>(null);
+  const [briefingLoading, setBriefingLoading] = useState(false);
 
   useEffect(() => {
     if (companyId) fetchData();
@@ -136,6 +138,31 @@ export default function Home() {
       }
     });
     setFuelDates(latestFuel);
+
+    // Proactive AI briefing
+    const currentStats = {
+      totalVehicles: totalFleet,
+      activeRoutes: `${activeToday.length} / ${totalFleet}`,
+      missingStarts: `${finishedToday.length} / ${totalStartedToday}`,
+      alerts: alertCount,
+      docAlerts: dAlerts?.length || 0,
+    };
+    const currentVehicles = (vData || []).map((v: any) => ({
+      plate: v.plate,
+      status: v.status,
+      is_active_route: latestStatus[v.id] === 'start',
+      is_finished_route: latestStatus[v.id] === 'end',
+    }));
+    setBriefingLoading(true);
+    fetch('/api/briefing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stats: currentStats, vehicles: currentVehicles }),
+    })
+      .then(r => r.json())
+      .then(d => { if (d.briefing) setBriefing(d.briefing); })
+      .catch(() => {})
+      .finally(() => setBriefingLoading(false));
   }
 
   async function handleNotify(driverId: string, driverName: string, plate: string) {
@@ -363,12 +390,22 @@ export default function Home() {
               <p className="text-slate-400 text-sm font-bold uppercase tracking-widest mb-10">Security Analytics</p>
 
               <div className="space-y-6">
-                <div className="bg-white/5 border border-white/10 p-6 rounded-[32px] backdrop-blur-xl">
-                  <p className="text-[10px] font-black uppercase tracking-widest opacity-50 mb-2 text-blue-400">System Integrity</p>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xl font-bold">100% Correcto</span>
-                    <CheckCircle className="w-6 h-6 text-blue-500" />
-                  </div>
+                {/* AI Daily Briefing */}
+                <div className="bg-white/5 border border-white/10 p-6 rounded-[32px] backdrop-blur-xl min-h-[80px]">
+                  <p className="text-[10px] font-black uppercase tracking-widest opacity-50 mb-3 text-blue-400">Briefing del Día</p>
+                  {briefingLoading ? (
+                    <div className="flex items-center gap-3 opacity-50">
+                      <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                      <span className="text-xs font-bold text-slate-300">Analizando flota...</span>
+                    </div>
+                  ) : briefing ? (
+                    <p className="text-sm font-bold text-slate-200 leading-relaxed">{briefing}</p>
+                  ) : (
+                    <div className="flex items-center justify-between">
+                      <span className="text-xl font-bold">Todo en orden</span>
+                      <CheckCircle className="w-6 h-6 text-blue-500" />
+                    </div>
+                  )}
                 </div>
 
                 {stats.docAlerts > 0 && (
@@ -378,6 +415,18 @@ export default function Home() {
                       <div className="flex items-center justify-between">
                         <span className="text-xl font-bold">{stats.docAlerts} Docs por Vencer</span>
                         <AlertTriangle className="w-6 h-6 text-rose-400" />
+                      </div>
+                    </div>
+                  </Link>
+                )}
+
+                {stats.alerts > 0 && (
+                  <Link href="/alerts" className="block transform hover:scale-105 transition-transform">
+                    <div className="bg-amber-500/20 border border-amber-500/40 p-6 rounded-[32px] backdrop-blur-xl">
+                      <p className="text-[10px] font-black uppercase tracking-widest opacity-50 mb-2 text-amber-300">Novedades Hoy</p>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xl font-bold">{stats.alerts} Anomalías</span>
+                        <AlertTriangle className="w-6 h-6 text-amber-400" />
                       </div>
                     </div>
                   </Link>
