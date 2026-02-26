@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+:root {
+  --background: #f8fafc;
+  /* Slate 50 */
+  --foreground: #0f172a;
+  /* Slate 900 */
+  --sidebar: #ffffff;
+  --card: #ffffff;
+  --border: #e2e8f0;
+  /* Slate 200 */
+  --primary: #2563eb;
+  /* Blue 600 */
+}
+
+/* We force light mode for now as requested */
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
