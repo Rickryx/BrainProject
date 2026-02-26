@@ -65,6 +65,11 @@ def register_handlers(bot: TeleBot):
         from bot_app.handlers.commands import show_main_menu
         show_main_menu(bot, chat_id, "¿Deseas realizar otra acción?")
 
+    @bot.message_handler(func=lambda m: m.text == "🚨 Reportar Incidente")
+    def handle_incident_trigger(message):
+        from bot_app.handlers.flow_incident import start_incident_flow
+        start_incident_flow(bot, message)
+
     @bot.message_handler(func=lambda m: m.text == "🧾 Documentación")
     def handle_docs_trigger(message):
         from bot_app.handlers.flow_docs import start_doc_flow
@@ -99,6 +104,7 @@ def show_main_menu(bot, chat_id, welcome_text=None):
         markup.row('b) Registrar inicio de recorrido')
         
     markup.row('a) Registrar tanqueada')
+    markup.row('🚨 Reportar Incidente')
     markup.row('🧾 Documentación')
     markup.row('🧾 Mis Reportes')
     markup.row('🔄 Menú Principal')
