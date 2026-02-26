@@ -1,0 +1,28 @@
+# Secrets y credenciales — NUNCA commitear
+.env
+.env.local
+.env.*.local
+credentials_oauth.json
+thinking-seer-*.json
+*.pem
+*.key
+
+# Node
+node_modules/
+.next/
+dist/
+.vercel/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+nohup.out
+
+# OS
+.DS_Store
+
+# Supabase
+supabase/.temp/
