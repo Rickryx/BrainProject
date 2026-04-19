@@ -84,6 +84,13 @@ export default function VehiclesPage() {
             .lte('recorded_at', endRange)
             .order('recorded_at', { ascending: true });
 
+        const vIds = vData.map((v: any) => v.id);
+        const { data: mData } = await supabase
+            .from('maintenance_logs')
+            .select('*')
+            .in('vehicle_id', vIds)
+            .order('status_change_date', { ascending: false });
+
 
         // calcPeriod: first 'start' record = inicio, last 'end' record = fin
         // If only inicio registered (no 'end' yet) → fin='--', recorrido='--'
@@ -121,6 +128,18 @@ export default function VehiclesPage() {
             // Month (recentRecords already start from monthStart in the query)
             const { kmStart: monthStartKm, kmEnd: monthEndKm, kmTotal: monthTotal } = calcPeriod(recentRecords);
 
+            const vLogs = (mData || []).filter((m: any) => m.vehicle_id === v.id);
+            const oilLogs = vLogs.filter((m: any) => m.activity_performed.toLowerCase().includes('aceite'));
+            const alignLogs = vLogs.filter((m: any) => m.activity_performed.toLowerCase().includes('alineaci') || m.activity_performed.toLowerCase().includes('balanceo'));
+            
+            const lastOilKm = oilLogs.length > 0 ? Number(oilLogs[0].mileage_at_event) : null;
+            const lastAlignKm = alignLogs.length > 0 ? Number(alignLogs[0].mileage_at_event) : null;
+
+            const realCurrentOdo = Math.max(v.current_odometer || 0, dayEndKm || 0, monthEndKm || 0);
+
+            const remOil = lastOilKm !== null ? 10000 - (realCurrentOdo - lastOilKm) : null;
+            const remAlign = lastAlignKm !== null ? 10000 - (realCurrentOdo - lastAlignKm) : null;
+
             return {
                 ...v,
                 main_driver: currentDriver,
@@ -137,6 +156,11 @@ export default function VehiclesPage() {
                 monthStart: monthStartKm,
                 monthEnd: monthEndKm,
                 monthTotal,
+                lastOilKm,
+                remOil,
+                lastAlignKm,
+                remAlign,
+                realCurrentOdo
             };
         });
 
@@ -491,6 +515,29 @@ function VehicleCard({ vehicle, onNotify, onDelete }: {
                 </div>
             </div>
 
+            {/* Preventative Maintenance */}
+            <div className="mt-4 pt-3 border-t border-slate-200/50">
+                <p className="text-[7px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">Mantenimiento (Faltan)</p>
+                <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-white border border-slate-100 rounded-[12px] p-2 flex flex-col items-center justify-center shadow-sm relative overflow-hidden">
+                        <span className="text-[8px] font-black text-slate-400 uppercase mb-1">Aceite</span>
+                        {vehicle.remOil !== null ? (
+                            <span className={`text-xs font-black tracking-tight ${vehicle.remOil < 1000 ? 'text-rose-600' : vehicle.remOil < 3000 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                                {vehicle.remOil.toLocaleString()} km
+                            </span>
+                        ) : <span className="text-[10px] font-bold text-slate-300">--</span>}
+                    </div>
+                    <div className="bg-white border border-slate-100 rounded-[12px] p-2 flex flex-col items-center justify-center shadow-sm relative overflow-hidden">
+                        <span className="text-[7.5px] font-black text-slate-400 uppercase tracking-tight mb-1 text-center leading-none">Alineación</span>
+                        {vehicle.remAlign !== null ? (
+                            <span className={`text-xs font-black tracking-tight ${vehicle.remAlign < 1000 ? 'text-rose-600' : vehicle.remAlign < 3000 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                                {vehicle.remAlign.toLocaleString()} km
+                            </span>
+                        ) : <span className="text-[10px] font-bold text-slate-300">--</span>}
+                    </div>
+                </div>
+            </div>
+
             <Link href={`/vehicles/${vehicle.id}`} className="block mt-3">
                 <button className="w-full py-2.5 bg-white hover:bg-slate-900 hover:text-white text-slate-600 font-black uppercase text-[9px] tracking-[0.4em] rounded-[16px] transition-all border border-slate-100 shadow-sm active:scale-95 flex items-center justify-center gap-2">
                     Más Detalles <ArrowRight className="w-3.5 h-3.5" />
@@ -534,6 +581,7 @@ function VehicleTable({ vehicles, totals, average, requestSort, sortConfig, onNo
                             <th className="px-10 py-6 bg-[#fbfeff] border-b border-slate-100 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('dayTotal')}>
                                 <div className="flex items-center gap-2">Distancia {renderSortIcon('dayTotal')}</div>
                             </th>
+                            <th className="px-10 py-6 bg-[#fbfeff] border-b border-slate-100">Mantenimiento</th>
                             <th className="px-10 py-6 bg-[#fbfeff] border-b border-slate-100">Acciones</th>
                         </tr>
                     </thead>
@@ -559,6 +607,22 @@ function VehicleTable({ vehicles, totals, average, requestSort, sortConfig, onNo
                                     <span className={`font-black ${v.dayTotal !== null ? 'text-blue-600' : 'text-slate-300'}`}>
                                         {v.dayTotal !== null ? `${v.dayTotal.toLocaleString()} km` : '--'}
                                     </span>
+                                </td>
+                                <td className="px-10 py-6 min-w-[180px]">
+                                    <div className="flex flex-col gap-1.5 text-[9px] font-black uppercase tracking-widest">
+                                        <div className="flex justify-between items-center bg-slate-50 border border-slate-100 px-3 py-1.5 rounded-lg shadow-sm">
+                                            <span className="text-slate-400">Aceite:</span>
+                                            {v.remOil !== null ? (
+                                                <span className={v.remOil < 1000 ? 'text-rose-600' : v.remOil < 3000 ? 'text-amber-500' : 'text-emerald-600'}>{v.remOil.toLocaleString()} km</span>
+                                            ) : <span className="text-slate-300">--</span>}
+                                        </div>
+                                        <div className="flex justify-between items-center bg-slate-50 border border-slate-100 px-3 py-1.5 rounded-lg shadow-sm">
+                                            <span className="text-slate-400">Alin/Bal:</span>
+                                            {v.remAlign !== null ? (
+                                                <span className={v.remAlign < 1000 ? 'text-rose-600' : v.remAlign < 3000 ? 'text-amber-500' : 'text-emerald-600'}>{v.remAlign.toLocaleString()} km</span>
+                                            ) : <span className="text-slate-300">--</span>}
+                                        </div>
+                                    </div>
                                 </td>
                                 <td className="px-10 py-6">
                                     <div className="flex items-center gap-3">

@@ -14,6 +14,8 @@ interface Trip {
     startTime: string;
     endTime: string;
     driver: string;
+    startPhotoUrl?: string | null;
+    endPhotoUrl?: string | null;
 }
 interface DayData {
     date: string;
@@ -22,6 +24,7 @@ interface DayData {
     startKm: number | null;
     endKm: number | null;
     inRoute: boolean; // start without matching end = currently on route
+    openStartRecord?: any; // To store the unclosed start record
 }
 interface VehicleRow {
     id: string;
@@ -31,6 +34,7 @@ interface VehicleRow {
     model: string;
     imageUrl: string;
     driverName: string;
+    driverId: string | null;
     days: Record<string, DayData>;
     monthTotal: number;
     monthTrips: number;
@@ -78,8 +82,15 @@ export default function TripsPage() {
     const [month, setMonth] = useState(now.getMonth());
     const [loading, setLoading] = useState(true);
     const [vehicles, setVehicles] = useState<VehicleRow[]>([]);
+    const [driversList, setDriversList] = useState<any[]>([]);
     const [selected, setSelected] = useState<{ vehicle: VehicleRow; day: DayData } | null>(null);
     const [expandedId, setExpandedId] = useState<string | null>(null);
+
+    const [showAddModal, setShowAddModal] = useState(false);
+    const [showCloseModal, setShowCloseModal] = useState(false);
+    const [addForm, setAddForm] = useState({ vehicleId: '', driverId: '', date: '', startTime: '08:00', endTime: '18:00', startKm: '', endKm: '' });
+    const [closeForm, setCloseForm] = useState({ endTime: '', endKm: '' });
+
 
     const days = useMemo(() => getDaysInMonth(year, month), [year, month]);
 
@@ -94,7 +105,7 @@ export default function TripsPage() {
             const [{ data: vData }, { data: aData }, { data: rData }] = await Promise.all([
                 supabase.from('vehicles').select('*').order('plate'),
                 supabase.from('driver_assignments')
-                    .select('vehicle_id, users(full_name)')
+                    .select('vehicle_id, driver_id, users(full_name)')
                     .eq('role', 'principal').eq('is_active', true),
                 supabase.from('route_records')
                     .select('*, users:driver_id(full_name)')
@@ -102,16 +113,25 @@ export default function TripsPage() {
                     .lte('recorded_at', monthEnd.toISOString())
                     .order('recorded_at', { ascending: true })
                     .limit(10000),
+                supabase.from('users').select('id, full_name'),
             ]);
 
             if (!vData) { setLoading(false); return; }
+            if (rData && rData[4] && rData[4].data) { /* dummy line if typescript complains */ }
             const allRecs = rData || [];
+            
+            // The 4th item in Promise.all is users
+            const usersData = arguments.length ? arguments[0] : null; 
+            // Wait, Promise.all returns an array of results.
+            const uDataRes = await supabase.from('users').select('id, full_name');
+            setDriversList(uDataRes.data || []);
 
             const rows: VehicleRow[] = vData.map(v => {
                 const assignment = aData?.find((a: any) => a.vehicle_id === v.id);
                 const driverName = assignment?.users
                     ? (assignment.users as any).full_name
                     : (v.main_driver || 'Sin conductor');
+                const driverId = assignment?.driver_id || null;
 
                 const vRecs = allRecs.filter((r: any) => r.vehicle_id === v.id);
                 const dayMap: Record<string, any[]> = {};
@@ -145,10 +165,23 @@ export default function TripsPage() {
                                     startTime: fmtTime(s.recorded_at),
                                     endTime: fmtTime(match.recorded_at),
                                     driver: s.users?.full_name || driverName,
+                                    startPhotoUrl: s.photo_url || null,
+                                    endPhotoUrl: match.photo_url || null,
                                 });
                             }
                         }
                     });
+
+                    let openStartRecord = null;
+                    if (starts.length > usedEnds.size) {
+                        openStartRecord = starts.find((s: any) => {
+                            const match = ends.find((e: any) =>
+                                new Date(e.recorded_at) > new Date(s.recorded_at) &&
+                                !usedEnds.has(e.recorded_at)
+                            );
+                            return !match;
+                        });
+                    }
 
                     daysData[date] = {
                         date, trips,
@@ -156,13 +189,14 @@ export default function TripsPage() {
                         startKm: starts[0]?.odometer ?? null,
                         endKm: ends[ends.length - 1]?.odometer ?? null,
                         inRoute: starts.length > usedEnds.size,
+                        openStartRecord
                     };
                 });
 
                 return {
                     id: v.id, plate: v.plate, brand: v.brand || '',
                     line: v.line || '', model: v.model || '',
-                    imageUrl: v.image_url || '', driverName,
+                    imageUrl: v.image_url || '', driverName, driverId,
                     days: daysData,
                     monthTotal: Object.values(daysData).reduce((s, d) => s + d.totalKm, 0),
                     monthTrips: Object.values(daysData).reduce((s, d) => s + d.trips.length, 0),
@@ -196,6 +230,59 @@ export default function TripsPage() {
     // Total calendar width for the overflow wrapper
     const calendarW = IDENTITY_W + 6 + days.length * CELL_W + (days.length - 1) * GAP + 6 + SUMMARY_W;
 
+    async function handleAddTrip(e: React.FormEvent) {
+        e.preventDefault();
+        setLoading(true);
+        const { vehicleId, driverId, date, startTime, endTime, startKm, endKm } = addForm;
+
+        const startDateTime = new Date(`${date}T${startTime}:00`);
+        const endDateTime = new Date(`${date}T${endTime}:00`);
+
+        await supabase.from('route_records').insert([
+            {
+                driver_id: driverId || null,
+                vehicle_id: vehicleId,
+                activity_type: 'start',
+                odometer: parseInt(startKm),
+                recorded_at: startDateTime.toISOString()
+            },
+            {
+                driver_id: driverId || null,
+                vehicle_id: vehicleId,
+                activity_type: 'end',
+                odometer: parseInt(endKm),
+                recorded_at: endDateTime.toISOString()
+            }
+        ]);
+        
+        setShowAddModal(false);
+        setAddForm({ vehicleId: '', driverId: '', date: '', startTime: '08:00', endTime: '18:00', startKm: '', endKm: '' });
+        fetchData();
+    }
+
+    async function handleCloseTrip(e: React.FormEvent) {
+        e.preventDefault();
+        if (!selected || !selected.day.openStartRecord) return;
+        setLoading(true);
+        const { vehicle, day } = selected;
+        const d = day.date; // YYYY-MM-DD
+        const endDateTime = new Date(`${d}T${closeForm.endTime}:00`);
+
+        await supabase.from('route_records').insert({
+            driver_id: day.openStartRecord.driver_id,
+            vehicle_id: vehicle.id,
+            activity_type: 'end',
+            odometer: parseInt(closeForm.endKm),
+            recorded_at: endDateTime.toISOString()
+        });
+        
+        setShowCloseModal(false);
+        setCloseForm({ endTime: '', endKm: '' });
+        fetchData();
+        setSelected(null);
+        setExpandedId(null);
+    }
+
     return (
         <div className="flex h-screen bg-slate-100/50 text-slate-900 font-sans">
             <Sidebar />
@@ -208,15 +295,24 @@ export default function TripsPage() {
                         <h1 className="text-2xl font-black tracking-tight text-slate-900 leading-none mt-0.5">Historial de Recorridos</h1>
                     </div>
 
-                    {/* Month navigator */}
-                    <div className="flex items-center gap-1 bg-slate-100 border border-slate-200 rounded-2xl p-1">
-                        <button onClick={prevMonth} className="p-2 hover:bg-white rounded-xl transition-all shadow-sm">
-                            <ChevronLeft className="w-4 h-4 text-slate-500" />
+                    <div className="flex items-center gap-4">
+                        <button
+                            onClick={() => setShowAddModal(true)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold py-2.5 px-5 rounded-xl transition-colors shadow-sm"
+                        >
+                            + Ingresar Viaje
                         </button>
-                        <span className="text-sm font-black text-slate-800 px-4 capitalize min-w-[170px] text-center">{monthName}</span>
-                        <button onClick={nextMonth} disabled={isCurrentMonth} className="p-2 hover:bg-white rounded-xl transition-all shadow-sm disabled:opacity-30">
-                            <ChevronRight className="w-4 h-4 text-slate-500" />
-                        </button>
+
+                        {/* Month navigator */}
+                        <div className="flex items-center gap-1 bg-slate-100 border border-slate-200 rounded-2xl p-1">
+                            <button onClick={prevMonth} className="p-2 hover:bg-white rounded-xl transition-all shadow-sm">
+                                <ChevronLeft className="w-4 h-4 text-slate-500" />
+                            </button>
+                            <span className="text-sm font-black text-slate-800 px-4 capitalize min-w-[170px] text-center">{monthName}</span>
+                            <button onClick={nextMonth} disabled={isCurrentMonth} className="p-2 hover:bg-white rounded-xl transition-all shadow-sm disabled:opacity-30">
+                                <ChevronRight className="w-4 h-4 text-slate-500" />
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -426,11 +522,24 @@ export default function TripsPage() {
 
                                                         {selected.day.trips.length === 0 ? (
                                                             <div className="px-5 pb-5">
-                                                                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                                                                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center justify-between">
                                                                     <p className="text-amber-700 font-bold text-xs">
                                                                         Hay registros pero sin pares inicio/fin completos.
                                                                         {selected.day.startKm !== null && ` Odómetro registrado: ${fmtKm(selected.day.startKm)} km`}
                                                                     </p>
+                                                                    {selected.day.inRoute && (
+                                                                        <button 
+                                                                            onClick={() => {
+                                                                                if (selected.day.openStartRecord) {
+                                                                                    setCloseForm({ ...closeForm, endKm: String(selected.day.openStartRecord.odometer) });
+                                                                                }
+                                                                                setShowCloseModal(true);
+                                                                            }}
+                                                                            className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
+                                                                        >
+                                                                            Cerrar Viaje
+                                                                        </button>
+                                                                    )}
                                                                 </div>
                                                             </div>
                                                         ) : (
@@ -438,6 +547,23 @@ export default function TripsPage() {
                                                                 {selected.day.trips.map((trip, i) => (
                                                                     <TripCard key={i} trip={trip} index={i} />
                                                                 ))}
+                                                                {selected.day.inRoute && (
+                                                                    <div className="border border-emerald-300 bg-emerald-50 rounded-[16px] p-4 w-[190px] shrink-0 flex flex-col justify-center items-center text-center border-dashed">
+                                                                        <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse mb-2" />
+                                                                        <p className="text-emerald-800 font-bold text-xs mb-3">Viaje Abierto</p>
+                                                                        <button 
+                                                                            onClick={() => {
+                                                                                if (selected.day.openStartRecord) {
+                                                                                    setCloseForm({ ...closeForm, endKm: String(selected.day.openStartRecord.odometer) });
+                                                                                }
+                                                                                setShowCloseModal(true);
+                                                                            }}
+                                                                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-1.5 px-4 rounded-lg transition-colors"
+                                                                        >
+                                                                            Cerrar Viaje
+                                                                        </button>
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         )}
                                                     </div>
@@ -468,6 +594,108 @@ export default function TripsPage() {
                         </div>
                     )}
                 </div>
+
+                {/* --- MÓDALES --- */}
+                
+                {/* Modal: Agregar Viaje */}
+                {showAddModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+                        <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
+                                <h3 className="font-black text-lg text-slate-900">Ingresar Viaje Manual</h3>
+                                <button onClick={() => setShowAddModal(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-lg transition-colors">
+                                    <X className="w-5 h-5"/>
+                                </button>
+                            </div>
+                            <form onSubmit={handleAddTrip} className="p-6 space-y-4">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 mb-1">Vehículo</label>
+                                    <select required className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                                        value={addForm.vehicleId} onChange={e => setAddForm({...addForm, vehicleId: e.target.value})}>
+                                        <option value="">Seleccione un vehículo</option>
+                                        {vehicles.map(v => <option key={v.id} value={v.id}>{v.plate} - {v.driverName}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 mb-1">Conductor (Opcional)</label>
+                                    <select className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                                        value={addForm.driverId} onChange={e => setAddForm({...addForm, driverId: e.target.value})}>
+                                        <option value="">(Sin asignar)</option>
+                                        {driversList.map(d => <option key={d.id} value={d.id}>{d.full_name}</option>)}
+                                    </select>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Fecha</label>
+                                        <input required type="date" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                                            value={addForm.date} onChange={e => setAddForm({...addForm, date: e.target.value})} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Hora Inicio</label>
+                                        <input required type="time" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500"
+                                            value={addForm.startTime} onChange={e => setAddForm({...addForm, startTime: e.target.value})} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Hora Fin</label>
+                                        <input required type="time" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500"
+                                            value={addForm.endTime} onChange={e => setAddForm({...addForm, endTime: e.target.value})} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Odómetro Inicial</label>
+                                        <input required type="number" min="0" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500"
+                                            value={addForm.startKm} onChange={e => setAddForm({...addForm, startKm: e.target.value})} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-slate-500 mb-1">Odómetro Final</label>
+                                        <input required type="number" min="0" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500"
+                                            value={addForm.endKm} onChange={e => setAddForm({...addForm, endKm: e.target.value})} />
+                                    </div>
+                                </div>
+                                <div className="pt-4 flex justify-end">
+                                    <button type="submit" disabled={loading} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-2.5 px-6 rounded-xl transition-colors shadow-sm">
+                                        Crear Viaje
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* Modal: Cerrar Viaje */}
+                {showCloseModal && selected && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+                        <div className="bg-white rounded-2xl w-full max-w-[320px] shadow-2xl overflow-hidden animate-in fade-in duration-200">
+                            <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center">
+                                <h3 className="font-black text-base text-slate-900">Cerrar Viaje</h3>
+                                <button onClick={() => setShowCloseModal(false)} className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-lg transition-colors">
+                                    <X className="w-4 h-4"/>
+                                </button>
+                            </div>
+                            <form onSubmit={handleCloseTrip} className="p-5 space-y-4">
+                                <div className="mb-2 p-3 bg-blue-50 rounded-xl border border-blue-100">
+                                    <p className="text-xs font-bold text-blue-800">Vehículo: {selected.vehicle.plate}</p>
+                                    <p className="text-[10px] text-blue-600 mt-1">Odómetro Inicial: {fmtKm(selected.day.openStartRecord?.odometer || 0)} km</p>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 mb-1">Hora de Fin (para {selected.day.date})</label>
+                                    <input required type="time" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500"
+                                        value={closeForm.endTime} onChange={e => setCloseForm({...closeForm, endTime: e.target.value})} />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 mb-1">Odómetro Final</label>
+                                    <input required type="number" min={selected.day.openStartRecord?.odometer || 0} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500"
+                                        value={closeForm.endKm} onChange={e => setCloseForm({...closeForm, endKm: e.target.value})} />
+                                </div>
+                                <div className="pt-2">
+                                    <button type="submit" disabled={loading} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold py-2.5 rounded-xl transition-colors shadow-sm">
+                                        Terminar Recorrido
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
+
             </main>
         </div>
     );
@@ -518,10 +746,20 @@ function TripCard({ trip, index }: { trip: Trip; index: number }) {
                 <div>
                     <p className="text-[7px] font-black uppercase text-slate-400 tracking-wider mb-0.5">Inicio km</p>
                     <p className="text-[10px] font-black text-slate-700">{trip.startKm.toLocaleString('es-CO')}</p>
+                    {trip.startPhotoUrl && (
+                        <a href={trip.startPhotoUrl} target="_blank" rel="noreferrer" className="inline-block mt-1.5 focus:outline-none">
+                            <img src={trip.startPhotoUrl} alt="Inicio" className="w-9 h-9 object-cover rounded-md border border-slate-300 shadow-sm hover:scale-150 origin-top-left transition-transform duration-200" title="Ver foto de inicio" />
+                        </a>
+                    )}
                 </div>
                 <div>
                     <p className="text-[7px] font-black uppercase text-slate-400 tracking-wider mb-0.5">Fin km</p>
                     <p className="text-[10px] font-black text-slate-700">{trip.endKm.toLocaleString('es-CO')}</p>
+                    {trip.endPhotoUrl && (
+                        <a href={trip.endPhotoUrl} target="_blank" rel="noreferrer" className="inline-block mt-1.5 focus:outline-none">
+                            <img src={trip.endPhotoUrl} alt="Fin" className="w-9 h-9 object-cover rounded-md border border-slate-300 shadow-sm hover:scale-150 origin-top-right transition-transform duration-200" title="Ver foto de fin" />
+                        </a>
+                    )}
                 </div>
             </div>
 
